@@ -9,4 +9,4 @@ chromadb>=0.4.24               # Local vector store for rule knowledge
 
 # ── Phase 2: Code Generation ──
 lxml>=5.1.0                    # XML generation and validation
-jinja2>=3.1.3                  # XML template rendering
+javaobj-py3>=0.4.3          # Java object deserialization for PEGA .bin files

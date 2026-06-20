@@ -32,6 +32,31 @@ logger = logging.getLogger("pega-ai-companion")
 # Subcommand handlers
 # ──────────────────────────────────────────────
 
+def cmd_parse(args):
+    """Parse a PEGA JAR export into JSON rule files (Step 0 — before learn)."""
+    from parser import PegaExportParser
+
+    export_dir = Path(args.export_dir)
+    if not export_dir.exists():
+        logger.error(f"Export directory not found: {export_dir}")
+        logger.info("Place your PEGA exported .jar files in this directory.")
+        sys.exit(1)
+
+    logger.info(f"Parsing PEGA export from: {export_dir}")
+    parser_obj = PegaExportParser(
+        export_dir=str(export_dir),
+        output_dir=args.output_dir,
+        work_dir=args.work_dir,
+    )
+    rules = parser_obj.parse(
+        skip_existing=not args.force,
+        force_extract=args.force,
+    )
+    parser_obj.print_summary(rules)
+    logger.info(f"\n✅ Done! {len(rules)} rules written to {args.output_dir}")
+    logger.info(f"Next step: python tools/run_extended.py learn --analysis-dir {args.output_dir}")
+
+
 def cmd_learn(args):
     """Index existing PEGA analysis output into the vector knowledge base."""
     from knowledge import KnowledgeBuilder
@@ -168,6 +193,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # ── parse ──
+    parse_p = subparsers.add_parser(
+        "parse",
+        help="Parse a PEGA JAR export into JSON rule files (run this before 'learn')",
+    )
+    parse_p.add_argument(
+        "--export-dir",
+        required=True,
+        help="Directory containing your PEGA exported .jar files",
+    )
+    parse_p.add_argument(
+        "--output-dir",
+        default="./workspaces/output",
+        help="Where to write JSON rule files (default: ./workspaces/output)",
+    )
+    parse_p.add_argument(
+        "--work-dir",
+        default="./pega_work",
+        help="Temp directory for JAR extraction (default: ./pega_work)",
+    )
+    parse_p.add_argument(
+        "--force", action="store_true", help="Re-extract and re-parse even if already done"
+    )
+    parse_p.set_defaults(func=cmd_parse)
 
     # ── learn ──
     learn_p = subparsers.add_parser(
