@@ -28,7 +28,9 @@ knowledge_base/
 generated/
 workspaces/
 
-# PEGA exports (never commit these)
+# Work directories (JAR extraction temp files)
+pega_work/
+
 pega-export/
 *.bin
 *.zip
