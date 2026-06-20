@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   PEGA Activity Rule Template
-  Jinja2 template — variables in {{ }} are replaced by xml_formatter.py
+  Jinja2 template - double-brace variables are replaced by xml_formatter.py
   Conforms to PEGA 8.x Rule-Obj-Activity XML schema
 -->
 <rule-obj-activity
@@ -31,7 +31,7 @@
        Each step is one line of the activity.
        ═══════════════════════════════════════════════ -->
   <pageList name="pySteps">
-    {% for step in steps %}
+    {% for step in steps | default([]) %}
     <pageNode>
       <pyStepNum>{{ loop.index }}</pyStepNum>
       <pyStepMethod>{{ step.method }}</pyStepMethod>

@@ -17,14 +17,14 @@ from pathlib import Path
 
 import anthropic
 
-from ..knowledge.embeddings import EmbeddingEngine
-from ..knowledge.vector_store import VectorStore
-from .xml_formatter import XMLFormatter
+from knowledge.embeddings import EmbeddingEngine
+from knowledge.vector_store import VectorStore
+from generator.xml_formatter import XMLFormatter
 
 logger = logging.getLogger(__name__)
 
-GENERATE_MODEL = "claude-sonnet-4-20250514"
-MAX_TOKENS = 4000
+GENERATE_MODEL = "claude-sonnet-4-5"
+MAX_TOKENS = 8000
 AGENT10_PROMPT_PATH = Path(__file__).parent.parent.parent / "agents" / "10_generator" / "system-prompt.md"
 
 RULE_TYPES = ["Flow", "DataPage", "Activity", "Harness"]
@@ -98,13 +98,13 @@ class RuleGenerator:
         similar_rules_context = self._format_similar_rules(similar_rules)
         learned_conventions = self._extract_conventions(similar_rules)
 
-        # Step 4: Build system prompt
-        system_prompt = self.system_prompt_template.format(
-            similar_rules_context=similar_rules_context,
-            learned_conventions=learned_conventions,
-            user_request=request,
-            rule_type=rule_type,
-            target_class=target_class,
+        # Build system prompt using replace() to avoid clashes with JSON braces in template
+        system_prompt = (self.system_prompt_template
+            .replace("{similar_rules_context}", similar_rules_context)
+            .replace("{learned_conventions}", learned_conventions)
+            .replace("{user_request}", request)
+            .replace("{rule_type}", rule_type)
+            .replace("{target_class}", target_class)
         )
 
         # Step 5: Call Claude Sonnet

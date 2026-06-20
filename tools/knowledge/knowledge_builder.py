@@ -145,10 +145,15 @@ Respond in JSON only:
                 max_tokens=MAX_TOKENS,
                 messages=[{"role": "user", "content": prompt}],
             )
-            enrichment = json.loads(response.content[0].text)
+            response_text = response.content[0].text.strip()
+            # Strip markdown code fences if present
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                response_text = "\n".join(lines[1:-1])
+            enrichment = json.loads(response_text)
         except Exception as e:
             logger.warning(f"Enrichment failed for {rule_name}: {e}")
-            enrichment = {"description": rule_name, "business_context": ""}
+            enrichment = {"description": f"{rule_type}: {rule_name}", "business_context": ""}
 
         return {**raw, **enrichment}
 

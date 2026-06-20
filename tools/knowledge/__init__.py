@@ -1,6 +1,6 @@
 # tools/knowledge/__init__.py
-from .knowledge_builder import KnowledgeBuilder
-from .vector_store import VectorStore
-from .embeddings import EmbeddingEngine
+from knowledge.knowledge_builder import KnowledgeBuilder
+from knowledge.vector_store import VectorStore
+from knowledge.embeddings import EmbeddingEngine
 
 __all__ = ["KnowledgeBuilder", "VectorStore", "EmbeddingEngine"]

@@ -75,15 +75,21 @@ class XMLFormatter:
             rule_type = rule.get("rule_type", "")
 
             if raw_xml:
-                # LLM produced raw XML — validate it
+                # LLM produced raw XML — validate it, fall back to template if invalid
                 try:
                     formatted_xml = self._validate_and_format(raw_xml, rule_type)
                     rule["xml"] = formatted_xml
                     rule["xml_valid"] = True
                 except Exception as e:
                     logger.warning(f"XML validation failed for {rule.get('rule_name')}: {e}")
-                    rule["xml_valid"] = False
-                    rule["xml_error"] = str(e)
+                    logger.info(f"Falling back to template rendering for {rule.get('rule_name')}")
+                    try:
+                        rule["xml"] = self.render(rule_type, rule)
+                        rule["xml_valid"] = True
+                    except Exception as e2:
+                        logger.warning(f"Template rendering fallback also failed: {e2}")
+                        rule["xml_valid"] = False
+                        rule["xml_error"] = str(e)
             else:
                 # No XML from LLM — try template rendering
                 try:
@@ -120,14 +126,57 @@ class XMLFormatter:
     def extract_json_from_llm_response(self, raw_text: str) -> dict:
         """
         Safely extract JSON from Claude's response.
-        Handles cases where the model wraps JSON in markdown code blocks.
+        Handles markdown code fences and uses json5 for lenient parsing.
+        Falls back to extracting just metadata if XML inside JSON breaks parsing.
         """
         text = raw_text.strip()
-        # Strip ```json ... ``` wrapper if present
+        # Strip ```json ... ``` or ``` ... ``` wrapper if present
         if text.startswith("```"):
             lines = text.split("\n")
-            text = "\n".join(lines[1:-1])
+            # find closing ```
+            end = len(lines)
+            for i in range(len(lines) - 1, 0, -1):
+                if lines[i].strip() == "```":
+                    end = i
+                    break
+            text = "\n".join(lines[1:end])
+
+        # Try standard json first
         try:
             return json.loads(text)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Could not parse LLM JSON output: {e}\nRaw: {raw_text[:500]}") from e
+        except json.JSONDecodeError:
+            pass
+
+        # Try json5 (more lenient)
+        try:
+            import json5
+            return json5.loads(text)
+        except Exception:
+            pass
+
+        # Last resort: extract just the metadata fields, skip problematic XML
+        # and use template rendering instead
+        import re
+        rules = []
+        for match in re.finditer(r'"rule_name"\s*:\s*"([^"]+)"', text):
+            rule_name = match.group(1)
+            type_match = re.search(r'"rule_type"\s*:\s*"([^"]+)"', text)
+            class_match = re.search(r'"pega_class"\s*:\s*"([^"]+)"', text)
+            desc_match = re.search(r'"description"\s*:\s*"([^"]+)"', text)
+            rules.append({
+                "rule_name": rule_name,
+                "rule_type": type_match.group(1) if type_match else "Activity",
+                "pega_class": class_match.group(1) if class_match else "",
+                "description": desc_match.group(1) if desc_match else "",
+                "xml": "",  # will be rendered from template
+            })
+
+        if rules:
+            logger.warning("Used regex fallback to extract rule metadata — XML will be template-rendered")
+            return {
+                "rules": rules,
+                "summary": "Generated via regex extraction fallback",
+                "review_checklist": ["Verify all rule details before importing"],
+            }
+
+        raise ValueError(f"Could not parse LLM response as JSON.\nRaw (first 300 chars): {raw_text[:300]}")

@@ -15,8 +15,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Lightweight model — fast, free, runs locally
-DEFAULT_MODEL = "all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384  # dimension for all-MiniLM-L6-v2
+DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"  # lightweight, fast, works on Windows
+EMBEDDING_DIM = 384
 
 # Cache file to avoid re-embedding unchanged rules
 CACHE_FILE = ".embedding_cache.json"
@@ -67,10 +67,10 @@ class EmbeddingEngine:
         if to_compute_texts:
             logger.info(f"Computing embeddings for {len(to_compute_texts)} rules (cache miss)")
             model = self._get_model()
-            vectors = model.encode(to_compute_texts, show_progress_bar=True, batch_size=32).tolist()
+            import numpy as np
+            vectors = [np.array(v).tolist() for v in model.embed(to_compute_texts)]
             for i, vec in zip(to_compute_indices, vectors):
                 self._cache[hashes[i]] = vec
-
             self._save_cache()
 
         for i, h in enumerate(hashes):
@@ -113,21 +113,21 @@ class EmbeddingEngine:
         if h in self._cache:
             return self._cache[h]
         model = self._get_model()
-        vec = model.encode([text])[0].tolist()
-        self._cache[h] = vec
+        import numpy as np
+        vec = list(model.embed([text]))[0]
+        self._cache[h] = np.array(vec).tolist() if hasattr(vec, '__len__') else vec
         self._save_cache()
         return vec
 
     def _get_model(self):
         if self._model is None:
             try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError:
-                raise ImportError(
-                    "sentence-transformers is required. Run: pip install sentence-transformers"
-                )
-            logger.info(f"Loading embedding model: {self.model_name}")
-            self._model = SentenceTransformer(self.model_name)
+                from fastembed import TextEmbedding
+                logger.info(f"Loading embedding model: {self.model_name}")
+                self._model = TextEmbedding(model_name=self.model_name)
+            except Exception as e:
+                logger.warning(f"fastembed model load failed ({e}), using built-in hash embeddings")
+                self._model = _HashEmbedder()
         return self._model
 
     @staticmethod
@@ -144,3 +144,34 @@ class EmbeddingEngine:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.cache_path, "w") as f:
             json.dump(self._cache, f)
+
+
+class _HashEmbedder:
+    """
+    Zero-dependency fallback embedder using deterministic hash-based vectors.
+    No model download needed. Works offline. Good enough for small rule sets.
+    """
+
+    DIM = 384
+
+    def embed(self, texts):
+        for text in texts:
+            yield self._hash_embed(text)
+
+    def _hash_embed(self, text: str) -> list[float]:
+        import math
+        vec = [0.0] * self.DIM
+        words = text.lower().split()
+        for i, word in enumerate(words):
+            h = int(hashlib.md5(word.encode()).hexdigest(), 16)
+            idx = h % self.DIM
+            vec[idx] += 1.0
+        # Also use character trigrams for better semantic coverage
+        for j in range(len(text) - 2):
+            trigram = text[j:j+3].lower()
+            h = int(hashlib.md5(trigram.encode()).hexdigest(), 16)
+            idx = h % self.DIM
+            vec[idx] += 0.3
+        # L2 normalise
+        magnitude = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [v / magnitude for v in vec]

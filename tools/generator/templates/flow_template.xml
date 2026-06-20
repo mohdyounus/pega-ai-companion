@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   PEGA Flow Rule Template
-  Jinja2 template — variables in {{ }} are replaced by xml_formatter.py
+  Jinja2 template - double-brace variables are replaced by xml_formatter.py
   Conforms to PEGA 8.x Flow rule XML schema
 -->
 <rule-obj-flow

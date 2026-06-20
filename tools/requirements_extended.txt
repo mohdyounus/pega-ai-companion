@@ -4,7 +4,7 @@ anthropic>=0.30.0
 pyyaml>=6.0.1
 
 # ── Phase 1: Knowledge Base (Learn) ──
-sentence-transformers>=2.7.0   # Local embeddings — zero API cost
+fastembed>=0.4.0               # Local embeddings — zero API cost, Windows compatible (no PyTorch)
 chromadb>=0.4.24               # Local vector store for rule knowledge
 
 # ── Phase 2: Code Generation ──
