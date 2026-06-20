@@ -1,0 +1,6 @@
+Manifest-Version: 1.0
+ArchiveType: SchemaArchive
+SchemaObjectCount: 1
+
+Name: FileMetadata
+

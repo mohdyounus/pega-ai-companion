@@ -53,7 +53,7 @@ def cmd_parse(args):
         force_extract=args.force,
     )
     parser_obj.print_summary(rules)
-    logger.info(f"\n✅ Done! {len(rules)} rules written to {args.output_dir}")
+    logger.info(f"Done! {len(rules)} rules written to {args.output_dir}")
     logger.info(f"Next step: python tools/run_extended.py learn --analysis-dir {args.output_dir}")
 
 

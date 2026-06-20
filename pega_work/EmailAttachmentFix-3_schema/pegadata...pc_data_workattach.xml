@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<database catalogName="" databaseName="PegaDATA" schemaName="" type="6">
+    <table name="pc_data_workattach">
+        <column dbtypename="timestamp" name="pxCommitDateTime" size="29" type="TIMESTAMP"/>
+        <column dbtypename="timestamp" name="pxSaveDateTime" size="29" type="TIMESTAMP"/>
+        <column dbtypename="timestamp" name="pxCreateDateTime" size="29" type="TIMESTAMP"/>
+        <column dbtypename="varchar" name="pxCreateOpName" size="128" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pxCreateOperator" size="128" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pxCreateSystemID" size="32" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pxInsName" size="128" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pxObjClass" size="96" type="VARCHAR"/>
+        <column dbtypename="timestamp" name="pxUpdateDateTime" size="29" type="TIMESTAMP"/>
+        <column dbtypename="varchar" name="pxUpdateOpName" size="128" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pxUpdateOperator" size="128" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pxUpdateSystemID" size="32" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pyLabel" size="64" type="VARCHAR"/>
+        <column dbtypename="timestamp" name="pxAttachKey" size="29" type="TIMESTAMP"/>
+        <column dbtypename="varchar" name="pxRefObjectKey" size="255" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pxAttachName" size="255" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pzInsKey" pkname="pc_data_workattach_pk" primarykey="true" required="true" size="255" type="VARCHAR"/>
+        <column dbtypename="bytea" name="pzPVStream" size="2147483647" type="BINARY"/>
+        <column dbtypename="varchar" name="pyURL" size="520" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pyGroup" size="3000" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pyNote" size="120" type="VARCHAR"/>
+        <column dbtypename="varchar" name="IsEvidence" size="32" type="VARCHAR"/>
+        <column dbtypename="varchar" name="FileSizeInUnits" size="32" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pxRefObjectEmbedClass" size="255" type="VARCHAR"/>
+        <column dbtypename="varchar" name="pyContentLocation" size="400" type="VARCHAR"/>
+    </table>
+</database>

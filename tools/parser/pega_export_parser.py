@@ -151,7 +151,7 @@ class PegaExportParser:
         """Print a summary of parsed rules grouped by type."""
         from collections import Counter
         type_counts = Counter(r.get("rule_type", "unknown") for r in rules)
-        print("\n📋 Parsed Rule Summary:")
+        print("\n=== Parsed Rule Summary ===")
         print(f"{'Rule Type':<30} {'Count':>6}")
         print("-" * 38)
         for rule_type, count in sorted(type_counts.items(), key=lambda x: -x[1]):

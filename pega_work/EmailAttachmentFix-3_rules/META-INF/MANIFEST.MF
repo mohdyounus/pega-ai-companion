@@ -1,0 +1,7 @@
+Manifest-Version: 1.0
+ArtifactType: product
+ArtifactName: EmailAttachmentsFix
+ArtifactVersion: 01.01.01
+
+Name: FileMetadata
+

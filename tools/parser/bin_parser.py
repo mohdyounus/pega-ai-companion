@@ -92,9 +92,21 @@ class BinParser:
 
     def _parse_with_javaobj(self, path: Path) -> list[dict]:
         import javaobj.v2 as javaobj
+        import io
 
-        with open(path, "rb") as f:
-            obj = javaobj.load(f)
+        raw = path.read_bytes()
+
+        # PEGA prepends a proprietary header before the Java serialization block.
+        # Find the Java serialization magic bytes (0xAC 0xED) to skip the header.
+        java_magic = b'\xAC\xED'
+        offset = raw.find(java_magic)
+        if offset < 0:
+            raise ValueError("Java serialization magic (0xACED) not found in .bin file")
+
+        if offset > 0:
+            logger.info(f"Skipping {offset:,} byte PEGA header to reach Java serialization block")
+
+        obj = javaobj.load(io.BytesIO(raw[offset:]))
 
         rules = []
         inventory = self._unwrap_java_object(obj)
