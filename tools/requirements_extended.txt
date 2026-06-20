@@ -9,4 +9,4 @@ chromadb>=0.4.24               # Local vector store for rule knowledge
 
 # ── Phase 2: Code Generation ──
 lxml>=5.1.0                    # XML generation and validation
-javaobj-py3>=0.4.3          # Java object deserialization for PEGA .bin files
+python-dotenv>=1.0.0           # Auto-loads .env file for API key

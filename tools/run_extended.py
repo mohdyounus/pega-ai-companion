@@ -20,6 +20,13 @@ import os
 import sys
 from pathlib import Path
 
+# Auto-load .env file if present (keeps API key out of shell history)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass  # dotenv optional — can still set env var manually
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
