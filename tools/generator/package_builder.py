@@ -1,15 +1,19 @@
-"""
+﻿"""
 package_builder.py
-Packages generated PEGA rule XML files into a .zip Rule Archive
-that can be imported via PEGA's Deployment Manager or App Studio.
+Packages generated PEGA rule XML files into a review bundle (.zip).
 
-PEGA Rule Archive format:
-  - Root: importzip.xml  (manifest listing all rules)
-  - Each rule: data/rule-<ruleclass>-<rulename>.xml
+NOTE: PEGA's Application Import Wizard only accepts its own binary export
+format (Java-serialized .bin files in a JAR). Direct XML import is NOT
+supported via the Import Wizard. Instead, use the generated HTML guide
+to manually create the rule in PEGA Designer Studio.
+
+Package contents:
+  - <RuleName>.xml          -- clipboard-ready rule XML (blueprint)
+  - <RuleName>_guide.html   -- step-by-step creation guide in PEGA
+  - README.txt              -- import instructions
 """
 
 from __future__ import annotations
-import io
 import logging
 import zipfile
 from datetime import datetime
@@ -17,26 +21,50 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-IMPORTZIP_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
-<import version="1.0" generatedBy="PEGA-AI-Companion" generatedAt="{timestamp}">
-  <rulesets>
-    <ruleset name="{ruleset_name}" version="{ruleset_version}">
-      {rule_entries}
-    </ruleset>
-  </rulesets>
-</import>
-"""
+RULE_TYPE_TO_PEGA_MENU = {
+    "Activity": "Technical > Activity",
+    "Flow": "Process > Flow",
+    "DataPage": "Data Model > Data Page",
+    "Harness": "User Interface > Harness",
+}
 
-RULE_ENTRY_TEMPLATE = (
-    '      <rule class="{rule_class}" name="{rule_name}" type="{rule_type}" '
-    'file="{filename}" />'
-)
+README_TEMPLATE = """PEGA AI Companion -- Generated Rule Package
+===========================================
+Generated: {timestamp}
+Package:   {package_name}
+Rules:     {rule_count}
+
+HOW TO USE THIS PACKAGE
+------------------------
+PEGA's Application Import Wizard requires binary .jar archives with Java-
+serialized rule data. This package cannot be imported via the wizard.
+
+RECOMMENDED: Open {guide_file} in a browser for a step-by-step guide.
+
+METHOD 1 -- Manual creation in Designer Studio (recommended):
+  1. Open PEGA Designer Studio
+  2. Click [Create] -> {menu_path}
+  3. Use the XML file and HTML guide as your blueprint
+  4. Fill in each field, then Save and Check In
+
+METHOD 2 -- Clipboard XML paste (advanced, PEGA 8+):
+  1. Create the rule shell manually (name + class only)
+  2. In Designer Studio: Help > Clipboard Viewer (F11)
+  3. Navigate to the rule page in the tree
+  4. Use "Import from XML" to paste properties from the XML file
+
+FILES IN THIS PACKAGE
+---------------------
+{file_list}
+
+REVIEW CHECKLIST
+----------------
+{checklist}
+"""
 
 
 class PackageBuilder:
-    """
-    Assembles generated PEGA XML rules into an importable .zip archive.
-    """
+    """Assembles generated PEGA rules into a review bundle (.zip)."""
 
     def __init__(self, output_dir: str = "./generated"):
         self.output_dir = Path(output_dir)
@@ -49,21 +77,7 @@ class PackageBuilder:
         ruleset_name: str = "AI-Generated",
         ruleset_version: str = "01-01-01",
     ) -> Path:
-        """
-        Build a .zip Rule Archive from a generation result dict
-        (as returned by rule_generator.RuleGenerator.generate()).
-
-        Args:
-            generation_result: Output from RuleGenerator.generate()
-            package_name:      Base name for the .zip file
-            ruleset_name:      PEGA ruleset to assign imported rules to
-            ruleset_version:   Ruleset version string (PEGA format: MM-mm-pp)
-
-        Returns:
-            Path to the created .zip file
-        """
         rules = [r for r in generation_result.get("rules", []) if r.get("xml_valid", False)]
-
         if not rules:
             raise ValueError(
                 "No valid XML rules to package. Check xml_valid flags in generation output."
@@ -72,55 +86,51 @@ class PackageBuilder:
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         zip_filename = self.output_dir / f"{package_name}_{timestamp}.zip"
 
-        rule_entries = []
-        file_contents: list[tuple[str, str]] = []  # (filename, xml_content)
+        all_files: list[tuple[str, str]] = []
+        file_list_lines: list[str] = []
 
         for rule in rules:
             rule_name = rule.get("rule_name", "Unknown")
             rule_type = rule.get("rule_type", "Unknown")
-            pega_class = rule.get("pega_class", "")
             xml = rule.get("xml", "")
 
-            # PEGA archive file naming convention
-            type_prefix = self._rule_type_to_prefix(rule_type)
-            safe_name = rule_name.replace(" ", "-").lower()
-            safe_class = pega_class.replace(" ", "-").lower()
-            filename = f"data/{type_prefix}-{safe_class}-{safe_name}.xml"
+            xml_filename = f"{rule_name}.xml"
+            guide_filename = f"{rule_name}_guide.html"
 
-            rule_entries.append(
-                RULE_ENTRY_TEMPLATE.format(
-                    rule_class=pega_class,
-                    rule_name=rule_name,
-                    rule_type=rule_type,
-                    filename=filename,
-                )
-            )
-            file_contents.append((filename, xml))
-            logger.info(f"Packaging rule: {rule_name} ({rule_type}) → {filename}")
+            all_files.append((xml_filename, xml))
+            all_files.append((guide_filename, self._build_guide(rule, ruleset_name, ruleset_version, generation_result)))
 
-        # Build importzip.xml manifest
-        importzip_xml = IMPORTZIP_TEMPLATE.format(
+            file_list_lines.append(f"  {xml_filename}  -- rule XML blueprint")
+            file_list_lines.append(f"  {guide_filename} -- step-by-step guide (open in browser)")
+            logger.info(f"Packaging rule: {rule_name} ({rule_type}) -> {xml_filename}")
+
+        first_rule = rules[0]
+        menu_path = RULE_TYPE_TO_PEGA_MENU.get(first_rule.get("rule_type", ""), "Technical > Activity")
+        checklist = generation_result.get("review_checklist", [])
+        checklist_text = "\n".join(f"  - {item}" for item in checklist) if checklist else "  (none)"
+        guide_file = f"{first_rule.get('rule_name', 'rule')}_guide.html"
+
+        readme = README_TEMPLATE.format(
             timestamp=datetime.utcnow().isoformat(),
-            ruleset_name=ruleset_name,
-            ruleset_version=ruleset_version,
-            rule_entries="\n".join(rule_entries),
+            package_name=zip_filename.name,
+            rule_count=len(rules),
+            menu_path=menu_path,
+            guide_file=guide_file,
+            file_list="\n".join(file_list_lines),
+            checklist=checklist_text,
         )
+        all_files.append(("README.txt", readme))
 
-        # Write zip
         with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("importzip.xml", importzip_xml)
-            for filename, xml_content in file_contents:
-                zf.writestr(filename, xml_content)
+            for filename, content in all_files:
+                zf.writestr(filename, content)
 
         logger.info(f"Package created: {zip_filename} ({len(rules)} rules)")
         self._write_summary(zip_filename, generation_result, rules)
         return zip_filename
 
     def save_xml_files(self, generation_result: dict) -> list[Path]:
-        """
-        Alternative to zip packaging — save each rule as a standalone XML file.
-        Useful for manual review before packaging.
-        """
+        """Save each rule as a standalone XML file for manual review."""
         rules = generation_result.get("rules", [])
         saved = []
         for rule in rules:
@@ -135,60 +145,96 @@ class PackageBuilder:
         return saved
 
     # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
-    @staticmethod
-    def _rule_type_to_prefix(rule_type: str) -> str:
-        mapping = {
-            "Flow": "rule-obj-flow",
-            "DataPage": "rule-declare-pages",
-            "Activity": "rule-obj-activity",
-            "Harness": "rule-html-harness",
-        }
-        return mapping.get(rule_type, "rule-unknown")
+    def _build_guide(self, rule: dict, ruleset_name: str, ruleset_version: str, result: dict) -> str:
+        rule_name = rule.get("rule_name", "")
+        rule_type = rule.get("rule_type", "Activity")
+        pega_class = rule.get("pega_class", "")
+        description = rule.get("description", "")
+        menu_path = RULE_TYPE_TO_PEGA_MENU.get(rule_type, "Technical > Activity")
+        summary = result.get("summary", "")
+        checklist = result.get("review_checklist", [])
+        checklist_html = "".join(f"<li>{item}</li>" for item in checklist)
+
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<title>PEGA Creation Guide -- {rule_name}</title>
+<style>
+  body{{font-family:Arial,sans-serif;max-width:900px;margin:40px auto;padding:0 20px}}
+  h1{{color:#003366}}h2{{color:#0066cc;border-bottom:1px solid #ccc}}
+  .step{{background:#f5f9ff;border-left:4px solid #0066cc;padding:12px 16px;margin:10px 0}}
+  .field{{display:flex;gap:16px;margin:6px 0}}
+  .label{{font-weight:bold;min-width:180px;color:#444}}
+  .value{{font-family:monospace;background:#eee;padding:2px 6px;border-radius:3px}}
+  .warn{{background:#fff8e1;border-left:4px solid #ffc107;padding:12px;margin:12px 0}}
+  ol li{{margin:8px 0}}
+</style>
+</head><body>
+<h1>PEGA Rule Creation Guide: {rule_name}</h1>
+<div class="warn">
+  <strong>AI-Generated Rule</strong> -- Review all details before saving to PEGA.
+  The Application Import Wizard cannot import this file (it needs binary .jar format).
+  Follow the steps below to create the rule manually.
+</div>
+
+<h2>Rule Details</h2>
+<div class="field"><span class="label">Rule Type:</span><span class="value">{rule_type}</span></div>
+<div class="field"><span class="label">Rule Name:</span><span class="value">{rule_name}</span></div>
+<div class="field"><span class="label">Apply to Class:</span><span class="value">{pega_class}</span></div>
+<div class="field"><span class="label">RuleSet:</span><span class="value">{ruleset_name} {ruleset_version}</span></div>
+<div class="field"><span class="label">Description:</span><span class="value">{description[:120]}</span></div>
+
+<h2>Steps to Create in PEGA Designer Studio</h2>
+<ol>
+  <li class="step">Open <strong>PEGA Designer Studio</strong></li>
+  <li class="step">Click <strong>+ Create</strong> &rarr; <strong>{menu_path}</strong></li>
+  <li class="step">Fill in the New Rule form:
+    <br>&bull; <strong>Label:</strong> {description[:80]}
+    <br>&bull; <strong>Apply to (Class):</strong> <code>{pega_class}</code>
+    <br>&bull; <strong>Add to ruleset:</strong> <code>{ruleset_name}</code> version <code>{ruleset_version}</code>
+    <br>&bull; Click <strong>[Create and Open]</strong>
+  </li>
+  <li class="step">Open <code>{rule_name}.xml</code> from this package as your blueprint -- add each step/property to the rule form</li>
+  <li class="step">Click <strong>[Save]</strong> then <strong>[Check In]</strong></li>
+  <li class="step">Go through the Review Checklist below before activating</li>
+</ol>
+
+<h2>What the AI Generated</h2>
+<p>{summary}</p>
+
+<h2>Review Checklist</h2>
+<ul>{checklist_html}</ul>
+
+<h2>Reference XML</h2>
+<p>See <code>{rule_name}.xml</code> in this package for the full rule XML.</p>
+<hr><p style="color:#999;font-size:12px">Generated by PEGA AI Companion -- {datetime.utcnow().isoformat()} UTC</p>
+</body></html>"""
 
     def _write_summary(self, zip_path: Path, generation_result: dict, rules: list[dict]):
-        """Write a human-readable summary file alongside the zip."""
         summary_path = zip_path.with_suffix(".md")
         lines = [
-            f"# PEGA AI Companion — Generation Summary",
-            f"",
+            "# PEGA AI Companion -- Generation Summary",
+            "",
             f"**Generated**: {datetime.utcnow().isoformat()} UTC",
             f"**Package**: {zip_path.name}",
             f"**Rules**: {len(rules)}",
-            f"",
-            f"## Summary",
+            "",
+            "> **Import note**: PEGA Import Wizard needs binary .jar format.",
+            "> Open the HTML guide inside the .zip for manual creation steps.",
+            "",
+            "## Summary",
             generation_result.get("summary", ""),
-            f"",
-            f"## Generated Rules",
+            "",
+            "## Generated Rules",
         ]
         for rule in rules:
-            lines.append(f"- **{rule.get('rule_name')}** ({rule.get('rule_type')}) — {rule.get('description', '')}")
-            if rule.get("notes"):
-                lines.append(f"  - ⚠️ Notes: {rule['notes']}")
+            lines.append(f"- **{rule.get('rule_name')}** ({rule.get('rule_type')}) -- {rule.get('description', '')}")
 
         checklist = generation_result.get("review_checklist", [])
         if checklist:
-            lines += ["", "## Review Checklist", "Before importing into PEGA, verify:"]
+            lines += ["", "## Review Checklist"]
             for item in checklist:
                 lines.append(f"- [ ] {item}")
-
-        token_usage = generation_result.get("token_usage", {})
-        if token_usage:
-            lines += [
-                "",
-                "## Token Usage",
-                f"- Input: {token_usage.get('input_tokens', 0):,}",
-                f"- Output: {token_usage.get('output_tokens', 0):,}",
-            ]
-
-        lines += [
-            "",
-            "## Similar Rules Used as Context",
-        ]
-        for rid in generation_result.get("similar_rules_used", []):
-            lines.append(f"- {rid}")
 
         summary_path.write_text("\n".join(lines), encoding="utf-8")
         logger.info(f"Summary written: {summary_path}")
