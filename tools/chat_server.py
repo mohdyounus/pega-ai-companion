@@ -414,7 +414,7 @@ _Set the rule context fields above if you're working on a specific rule._`);
     addBubble('user', null, escHtml(msg));
 
     var thinkId = 'think-' + Date.now();
-    var botBubble = addBubble('bot', thinkId, '<span class="cursor"></span>');
+    var botBubble = addBubble('bot', thinkId, '');
     var accumulated = '';
     var intentBadge = '';
 
@@ -422,53 +422,48 @@ _Set the rule context fields above if you're working on a specific rule._`);
     var ruleClass  = document.getElementById('ctx-class').value.trim();
     var ruleSet    = document.getElementById('ctx-ruleset').value.trim();
 
+    // Show thinking indicator
+    botBubble.innerHTML = '<span style="color:#8b949e;font-style:italic">&#x23F3; Thinking...</span>';
+
     fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: msg, rule_name: ruleName, rule_class: ruleClass, rule_set: ruleSet, history: history })
     }).then(function(response) {
-      var reader = response.body.getReader();
-      var decoder = new TextDecoder();
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      return response.text();
+    }).then(function(body) {
       var log = document.getElementById('log');
-
-      function read() {
-        reader.read().then(function(result) {
-          if (result.done) {
-            history.push({ role: 'user', content: msg });
-            history.push({ role: 'assistant', content: accumulated });
-            if (history.length > 12) history = history.slice(-12);
-            busy = false;
-            input.disabled = false;
-            document.getElementById('send').disabled = false;
-            input.focus();
-            return;
+      // Parse all SSE lines from the complete response body
+      var lines = body.split('\\n');
+      lines.forEach(function(line) {
+        line = line.trim();
+        if (!line.startsWith('data: ')) return;
+        try {
+          var data = JSON.parse(line.slice(6));
+          if (data.intent) {
+            intentBadge = '<span class="badge badge-' + data.intent + '">' + data.intent.toUpperCase() + '</span><br>';
           }
-          var chunk = decoder.decode(result.value);
-          var lines = chunk.split('\\n');
-          lines.forEach(function(line) {
-            if (!line.startsWith('data: ')) return;
-            try {
-              var data = JSON.parse(line.slice(6));
-              if (data.intent) {
-                intentBadge = '<span class="badge badge-' + data.intent + '">' + data.intent.toUpperCase() + '</span><br>';
-              }
-              if (data.text) {
-                accumulated += data.text;
-                botBubble.innerHTML = intentBadge + renderMarkdown(accumulated) + '<span class="cursor"></span>';
-                log.scrollTop = log.scrollHeight;
-              }
-              if (data.done) {
-                botBubble.innerHTML = intentBadge + renderMarkdown(accumulated);
-                log.scrollTop = log.scrollHeight;
-              }
-            } catch(e) {}
-          });
-          read();
-        });
-      }
-      read();
+          if (data.text) {
+            accumulated += data.text;
+          }
+        } catch(e) { /* skip malformed lines */ }
+      });
+
+      if (!accumulated) accumulated = '_(no response — check server logs)_';
+      botBubble.innerHTML = intentBadge + renderMarkdown(accumulated);
+      log.scrollTop = log.scrollHeight;
+
+      history.push({ role: 'user', content: msg });
+      history.push({ role: 'assistant', content: accumulated });
+      if (history.length > 12) history = history.slice(-12);
+
+      busy = false;
+      input.disabled = false;
+      document.getElementById('send').disabled = false;
+      input.focus();
     }).catch(function(err) {
-      botBubble.innerHTML = '❌ Connection error: ' + err.message;
+      botBubble.innerHTML = '&#x274C; Error: ' + err.message + '<br><small style="color:#8b949e">Check that the server is running and ANTHROPIC_API_KEY is set.</small>';
       busy = false;
       input.disabled = false;
       document.getElementById('send').disabled = false;
