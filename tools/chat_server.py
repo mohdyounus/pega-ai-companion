@@ -34,6 +34,12 @@ logger = logging.getLogger("copilot-chat")
 
 KB_DIR = str(Path(__file__).parent.parent / "knowledge_base")
 
+# ── ADO Wiki config ───────────────────────────────────────────────────────────
+ADO_ORG     = os.environ.get("AZURE_DEVOPS_ORG_URL", "https://dev.azure.com/nztasd")
+ADO_PROJECT = os.environ.get("AZURE_DEVOPS_PROJECT", "SharedDelivery")
+ADO_WIKI_ID = os.environ.get("AZURE_DEVOPS_WIKI_ID", "SharedDelivery.wiki")
+ADO_PAT     = os.environ.get("AZURE_DEVOPS_PAT", "")
+
 app = FastAPI(title="PEGA Developer Copilot")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -200,6 +206,60 @@ def kb_status():
     except Exception as e:
         return {"count": 0, "rule_types": [], "status": f"error: {e}"}
 
+# ── Wiki Agent endpoints ───────────────────────────────────────────────────────
+class WikiRequest(BaseModel):
+    instruction: str
+    page_path: str = ""
+    author: str = "PEGA LSA"
+
+class WikiPushRequest(BaseModel):
+    page_path: str
+    markdown: str
+
+@app.post("/wiki/generate")
+async def wiki_generate(req: WikiRequest):
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return {"error": "ANTHROPIC_API_KEY not set"}
+    if not ADO_PAT:
+        return {"error": "AZURE_DEVOPS_PAT not set in .env"}
+    try:
+        import asyncio
+        from wiki.wiki_agent import WikiAgent
+        agent = WikiAgent(ADO_ORG, ADO_PROJECT, ADO_WIKI_ID, ADO_PAT, api_key, KB_DIR)
+        # Run blocking IO in thread pool so server stays responsive
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: agent.generate(req.instruction, req.page_path or None, req.author)
+        )
+        return result
+    except Exception as e:
+        logger.exception("Wiki generate error")
+        return {"error": str(e)}
+
+@app.post("/wiki/push")
+def wiki_push(req: WikiPushRequest):
+    if not ADO_PAT:
+        return {"error": "AZURE_DEVOPS_PAT not set in .env"}
+    try:
+        from wiki.wiki_writer import WikiWriter
+        writer = WikiWriter(ADO_ORG, ADO_PROJECT, ADO_WIKI_ID, ADO_PAT)
+        result = writer.create_or_update(req.page_path, req.markdown)
+        return {"status": "ok", "path": req.page_path, "id": result.get("id")}
+    except Exception as e:
+        logger.exception("Wiki push error")
+        return {"error": str(e)}
+
+@app.get("/wiki/pages")
+def wiki_pages():
+    if not ADO_PAT:
+        return {"error": "AZURE_DEVOPS_PAT not set"}
+    try:
+        from wiki.wiki_reader import WikiReader
+        reader = WikiReader(ADO_ORG, ADO_PROJECT, ADO_WIKI_ID, ADO_PAT)
+        return {"pages": reader.list_pages()}
+    except Exception as e:
+        return {"error": str(e)}
+
 # ── Chat UI ───────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -266,14 +326,43 @@ HTML_PAGE = """<!DOCTYPE html>
   .sug { background: #21262d; border: 1px solid #30363d; color: #8b949e; padding: 4px 12px; border-radius: 14px; font-size: 12px; cursor: pointer; }
   .sug:hover { border-color: #58a6ff; color: #58a6ff; }
 
+  /* Tabs */
+  #tabs { display: flex; background: #161b22; border-bottom: 1px solid #30363d; padding: 0 20px; }
+  .tab { padding: 10px 18px; font-size: 13px; color: #8b949e; cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+  .tab-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+  .tab-panel.active { display: flex; }
+
+  /* Wiki panel */
+  #wiki-panel { padding: 20px; gap: 14px; overflow-y: auto; }
+  #wiki-instruction { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #e6edf3; padding: 10px 14px; border-radius: 8px; font-size: 14px; resize: vertical; min-height: 80px; font-family: inherit; }
+  #wiki-instruction:focus { outline: none; border-color: #58a6ff; }
+  #wiki-path { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #e6edf3; padding: 8px 12px; border-radius: 6px; font-size: 13px; font-family: 'Consolas', monospace; }
+  #wiki-path:focus { outline: none; border-color: #58a6ff; }
+  .wiki-row { display: flex; gap: 10px; align-items: center; }
+  .wiki-label { font-size: 12px; color: #8b949e; white-space: nowrap; }
+  #wiki-generate { background: #1f6feb; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; }
+  #wiki-generate:hover { background: #388bfd; }
+  #wiki-generate:disabled { background: #21262d; color: #6e7681; cursor: not-allowed; }
+  #wiki-preview { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; font-size: 13px; line-height: 1.7; white-space: pre-wrap; font-family: 'Consolas', monospace; min-height: 200px; display: none; overflow-x: auto; }
+  #wiki-actions { display: none; gap: 10px; }
+  #wiki-push { background: #238636; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; }
+  #wiki-push:hover { background: #2ea043; }
+  #wiki-copy { background: #21262d; color: #e6edf3; border: 1px solid #30363d; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  #wiki-status { font-size: 13px; color: #3fb950; display: none; }
+  .doc-type-btn { background: #21262d; border: 1px solid #30363d; color: #8b949e; padding: 5px 14px; border-radius: 14px; font-size: 12px; cursor: pointer; }
+  .doc-type-btn.selected { background: #1f3a6e; border-color: #58a6ff; color: #58a6ff; }
+  #related-pages { font-size: 12px; color: #8b949e; padding: 8px 0; }
+  #related-pages a { color: #58a6ff; text-decoration: none; }
+
   /* Cursor blink */
   .cursor { display: inline-block; width: 2px; height: 14px; background: #58a6ff; animation: blink 1s infinite; vertical-align: middle; margin-left: 2px; }
   @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
 
   /* Scrollbar */
-  #log::-webkit-scrollbar { width: 6px; }
-  #log::-webkit-scrollbar-track { background: #0d1117; }
-  #log::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+  #log::-webkit-scrollbar, #wiki-panel::-webkit-scrollbar { width: 6px; }
+  #log::-webkit-scrollbar-track, #wiki-panel::-webkit-scrollbar-track { background: #0d1117; }
+  #log::-webkit-scrollbar-thumb, #wiki-panel::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -281,45 +370,111 @@ HTML_PAGE = """<!DOCTYPE html>
 <div id="header">
   <svg width="20" height="20" viewBox="0 0 16 16" fill="#58a6ff"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
   <h1>PEGA Developer Copilot</h1>
-  <div id="kb-status">⏳ Loading knowledge base...</div>
+  <div id="kb-status">&#x23F3; Loading...</div>
 </div>
 
-<div id="context-bar">
-  <div class="ctx-field"><label>Rule Name</label><input id="ctx-rule" placeholder="e.g. PROCESSINCOMINGEMAILS"></div>
-  <div class="ctx-field"><label>Class</label><input id="ctx-class" placeholder="e.g. WKTAAPP-RMS-WORK"></div>
-  <div class="ctx-field"><label>RuleSet</label><input id="ctx-ruleset" placeholder="e.g. RMS"></div>
+<div id="tabs">
+  <div class="tab active" onclick="switchTab('chat')">&#x1F4AC; Chat</div>
+  <div class="tab" onclick="switchTab('wiki')">&#x1F4DD; Wiki Agent</div>
 </div>
 
-<div id="suggestions">
-  <span class="sug" onclick="fillInput('@recommend a section to show a list of occurrences with filters')">🔍 Recommend section</span>
-  <span class="sug" onclick="fillInput('@generate an Activity to validate participant details and update case')">⚡ Generate activity</span>
-  <span class="sug" onclick="fillInput('@review the current activity for best practices')">✅ Review rule</span>
-  <span class="sug" onclick="fillInput('@debug why my activity fails when attachment list is empty')">🐛 Debug issue</span>
-  <span class="sug" onclick="fillInput('@test write unit test cases for the current activity')">🧪 Write tests</span>
-  <span class="sug" onclick="fillInput('how does Obj-Open work in PEGA activities?')">📖 Mentor</span>
+<!-- ── CHAT PANEL ─────────────────────────────── -->
+<div id="chat-panel" class="tab-panel active" style="flex-direction:column;">
+  <div id="context-bar">
+    <div class="ctx-field"><label>Rule Name</label><input id="ctx-rule" placeholder="e.g. PROCESSINCOMINGEMAILS"></div>
+    <div class="ctx-field"><label>Class</label><input id="ctx-class" placeholder="e.g. WKTAAPP-RMS-WORK"></div>
+    <div class="ctx-field"><label>RuleSet</label><input id="ctx-ruleset" placeholder="e.g. RMS"></div>
+  </div>
+  <div id="suggestions">
+    <span class="sug" onclick="fillInput('@recommend a section to show a list of occurrences with filters')">&#x1F50D; Recommend section</span>
+    <span class="sug" onclick="fillInput('@generate an Activity to validate participant details and update case')">&#x26A1; Generate activity</span>
+    <span class="sug" onclick="fillInput('@review the current activity for best practices')">&#x2705; Review rule</span>
+    <span class="sug" onclick="fillInput('@debug why my activity fails when attachment list is empty')">&#x1F41B; Debug issue</span>
+    <span class="sug" onclick="fillInput('@test write unit test cases for the current activity')">&#x1F9EA; Write tests</span>
+    <span class="sug" onclick="fillInput('how does Obj-Open work in PEGA activities?')">&#x1F4D6; Mentor</span>
+  </div>
+  <div id="log"></div>
+  <div id="footer">
+    <textarea id="input" placeholder="Ask anything... @generate @debug @review @test @recommend or just ask a question" rows="1"></textarea>
+    <button id="send" onclick="sendMessage()">Send</button>
+  </div>
 </div>
 
-<div id="log"></div>
+<!-- ── WIKI AGENT PANEL ───────────────────────── -->
+<div id="wiki-panel" class="tab-panel" style="flex-direction:column;overflow-y:auto;padding:20px;gap:14px;">
 
-<div id="footer">
-  <textarea id="input" placeholder="Ask anything... @generate @debug @review @test @recommend or just ask a question" rows="1"></textarea>
-  <button id="send" onclick="sendMessage()">Send</button>
+  <div style="font-size:13px;color:#8b949e;">
+    Describe what document you want to create or update. The agent will generate a fully structured document with Mermaid diagrams and links to related wiki pages, then push it to Azure DevOps Wiki.
+  </div>
+
+  <div>
+    <div class="wiki-label" style="margin-bottom:6px;">Document type</div>
+    <div style="display:flex;gap:8px;">
+      <span class="doc-type-btn selected" onclick="selectDocType(this,'hld')">&#x1F3D7; HLD</span>
+      <span class="doc-type-btn" onclick="selectDocType(this,'tdd')">&#x2699;&#xFE0F; Technical Design</span>
+      <span class="doc-type-btn" onclick="selectDocType(this,'adr')">&#x1F4CB; ADR</span>
+    </div>
+  </div>
+
+  <div>
+    <div class="wiki-label" style="margin-bottom:6px;">Your instruction</div>
+    <textarea id="wiki-instruction" placeholder="e.g. Create a high level design for the SCT DL9 integration with the Driver Licensing Register API, including case design, data model, and sequence diagram"></textarea>
+  </div>
+
+  <div>
+    <div class="wiki-label" style="margin-bottom:6px;">Wiki page path (optional — auto-generated if empty)</div>
+    <input id="wiki-path" type="text" placeholder="/Home - Waka Kotahi wiki/SCT-DL9/SCT-DL9-HLD">
+  </div>
+
+  <div class="wiki-row">
+    <button id="wiki-generate" onclick="generateWikiDoc()">&#x2728; Generate Document</button>
+    <span id="wiki-status"></span>
+  </div>
+
+  <div id="related-pages"></div>
+
+  <div id="wiki-preview"></div>
+
+  <div id="wiki-actions" style="display:none;flex-direction:row;gap:10px;padding-top:8px;">
+    <button id="wiki-push" onclick="pushToWiki()">&#x1F680; Push to Azure DevOps Wiki</button>
+    <button id="wiki-copy" onclick="copyMarkdown()">&#x1F4CB; Copy Markdown</button>
+  </div>
+
 </div>
 
 <script>
-  var history = [];
+  var conversationHistory = [];
   var busy = false;
+  var wikiMarkdown = '';
+  var wikiPath = '';
+  var selectedDocType = 'hld';
 
   // Check KB status on load
   fetch('/kb-status').then(r => r.json()).then(d => {
     var el = document.getElementById('kb-status');
     if (d.status === 'ready') {
-      el.textContent = '✅ Knowledge base: ' + d.count + ' rules';
-      el.className = 'ready';
+      el.textContent = '&#x2705; KB: ' + d.count + ' rules';
+      el.style.color = '#3fb950';
     } else {
-      el.textContent = '⚠️ KB: ' + d.status;
+      el.textContent = '&#x26A0;&#xFE0F; KB: ' + d.status;
     }
   });
+
+  // Tab switching
+  function switchTab(name) {
+    document.querySelectorAll('.tab').forEach(function(t,i) {
+      t.classList.toggle('active', (i===0&&name==='chat')||(i===1&&name==='wiki'));
+    });
+    document.getElementById('chat-panel').classList.toggle('active', name==='chat');
+    document.getElementById('wiki-panel').classList.toggle('active', name==='wiki');
+  }
+
+  // Doc type selection
+  function selectDocType(el, type) {
+    document.querySelectorAll('.doc-type-btn').forEach(function(b){ b.classList.remove('selected'); });
+    el.classList.add('selected');
+    selectedDocType = type;
+  }
 
   // Welcome message
   addBubble('bot', null, `👋 **Welcome to PEGA Developer Copilot**
@@ -415,7 +570,7 @@ _Set the rule context fields above if you're working on a specific rule._`);
     fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, rule_name: ruleName, rule_class: ruleClass, rule_set: ruleSet, history: history })
+      body: JSON.stringify({ message: msg, rule_name: ruleName, rule_class: ruleClass, rule_set: ruleSet, history: conversationHistory })
     }).then(function(response) {
       if (!response.ok) throw new Error('HTTP ' + response.status);
       return response.json();
@@ -426,9 +581,9 @@ _Set the rule context fields above if you're working on a specific rule._`);
       botBubble.innerHTML = badge + renderMarkdown(text);
       log.scrollTop = log.scrollHeight;
 
-      history.push({ role: 'user', content: msg });
-      history.push({ role: 'assistant', content: text });
-      if (history.length > 12) history = history.slice(-12);
+      conversationHistory.push({ role: 'user', content: msg });
+      conversationHistory.push({ role: 'assistant', content: text });
+      if (conversationHistory.length > 12) conversationHistory = conversationHistory.slice(-12);
 
       busy = false;
       input.disabled = false;
@@ -452,6 +607,116 @@ _Set the rule context fields above if you're working on a specific rule._`);
     this.style.height = 'auto';
     this.style.height = Math.min(this.scrollHeight, 120) + 'px';
   });
+
+  // ── Wiki Agent functions ────────────────────────────────────────────────────
+  function generateWikiDoc() {
+    var instruction = document.getElementById('wiki-instruction').value.trim();
+    if (!instruction) { alert('Please enter an instruction.'); return; }
+
+    var btn = document.getElementById('wiki-generate');
+    var statusEl = document.getElementById('wiki-status');
+    var previewEl = document.getElementById('wiki-preview');
+    var actionsEl = document.getElementById('wiki-actions');
+    var relatedEl = document.getElementById('related-pages');
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Generating...';
+    statusEl.style.display = 'none';
+    previewEl.style.display = 'none';
+    actionsEl.style.display = 'none';
+    relatedEl.innerHTML = '';
+    wikiMarkdown = '';
+
+    fetch('/wiki/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instruction: instruction,
+        page_path: document.getElementById('wiki-path').value.trim(),
+        author: 'PEGA LSA'
+      })
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+      btn.disabled = false;
+      btn.textContent = '✨ Generate Document';
+
+      if (data.error) {
+        statusEl.textContent = '❌ ' + data.error;
+        statusEl.style.color = '#f85149';
+        statusEl.style.display = 'block';
+        return;
+      }
+
+      wikiMarkdown = data.markdown;
+      wikiPath = data.page_path;
+
+      // Show suggested path
+      document.getElementById('wiki-path').value = data.page_path;
+
+      // Show related pages
+      if (data.related_pages && data.related_pages.length > 0) {
+        relatedEl.innerHTML = '<strong style="color:#8b949e;font-size:12px;">Related pages found and linked:</strong><br>' +
+          data.related_pages.map(function(p) {
+            return '<a href="' + p.link + '" target="_blank">' + p.path.split('/').pop() + '</a>';
+          }).join(' &bull; ');
+      }
+
+      // Show preview (raw markdown)
+      previewEl.textContent = wikiMarkdown;
+      previewEl.style.display = 'block';
+      actionsEl.style.display = 'flex';
+    })
+    .catch(function(err) {
+      btn.disabled = false;
+      btn.textContent = '✨ Generate Document';
+      statusEl.textContent = '❌ Error: ' + err.message;
+      statusEl.style.color = '#f85149';
+      statusEl.style.display = 'block';
+    });
+  }
+
+  function pushToWiki() {
+    if (!wikiMarkdown || !wikiPath) return;
+    var pushBtn = document.getElementById('wiki-push');
+    var statusEl = document.getElementById('wiki-status');
+    pushBtn.disabled = true;
+    pushBtn.textContent = '⏳ Pushing...';
+    statusEl.style.display = 'none';
+
+    fetch('/wiki/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page_path: wikiPath, markdown: wikiMarkdown })
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+      pushBtn.disabled = false;
+      pushBtn.textContent = '🚀 Push to Azure DevOps Wiki';
+      if (data.error) {
+        statusEl.textContent = '❌ ' + data.error;
+        statusEl.style.color = '#f85149';
+      } else {
+        statusEl.textContent = '✅ Published to Wiki: ' + data.path;
+        statusEl.style.color = '#3fb950';
+      }
+      statusEl.style.display = 'block';
+    })
+    .catch(function(err) {
+      pushBtn.disabled = false;
+      pushBtn.textContent = '🚀 Push to Azure DevOps Wiki';
+      statusEl.textContent = '❌ ' + err.message;
+      statusEl.style.color = '#f85149';
+      statusEl.style.display = 'block';
+    });
+  }
+
+  function copyMarkdown() {
+    if (!wikiMarkdown) return;
+    navigator.clipboard.writeText(wikiMarkdown).then(function() {
+      var btn = document.getElementById('wiki-copy');
+      btn.textContent = '✅ Copied!';
+      setTimeout(function(){ btn.textContent = '📋 Copy Markdown'; }, 2000);
+    });
+  }
 </script>
 </body>
 </html>"""
