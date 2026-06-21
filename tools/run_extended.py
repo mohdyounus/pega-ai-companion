@@ -229,7 +229,7 @@ def cmd_recommend(args):
 
     # Search with optional type filter
     where = {"rule_type": rule_type_filter} if rule_type_filter else None
-    results = store.search(query_vec, n_results=top_n * 3, where=where)
+    results = store.query(query_vec, n_results=top_n * 3, rule_type_filter=rule_type_filter)
 
     # Filter to UI types only if no specific type given
     if not rule_type_filter:
@@ -246,7 +246,7 @@ def cmd_recommend(args):
     for i, r in enumerate(results, 1):
         meta = r.get("metadata", {})
         context_blocks.append(
-            f"Match {i}: {r.get('id', 'unknown')}\n"
+            f"Match {i}: {r.get('rule_id', 'unknown')}\n"
             f"  Type: {meta.get('rule_type')} | Class: {meta.get('pega_class')}\n"
             f"  Template: {meta.get('template_type', 'unknown')} | "
             f"Layouts: {meta.get('layout_types', '[]')} | "
@@ -290,7 +290,9 @@ Be specific and practical. Reference the actual rule names from their codebase."
     logger.info(f"\nTop {len(results)} matches from your codebase:")
     for r in results:
         meta = r.get("metadata", {})
-        logger.info(f"  - {r.get('id')} ({meta.get('rule_type')} | "
+        rid = r.get("rule_id", "unknown")
+        rule_name = rid.split("_")[-1] if "_" in rid else rid
+        logger.info(f"  - {rule_name} ({meta.get('rule_type')} | "
                     f"template: {meta.get('template_type', '?')} | "
                     f"class: {meta.get('pega_class', '?')})")
     logger.info(f"\nRecommendation:\n{recommendation}")

@@ -74,7 +74,12 @@ class KnowledgeBuilder:
             if raw is None:
                 continue
 
-            rule_id = raw.get("rule_name") or rule_file.stem
+            rule_id = "{}_{}_{}_{}".format(
+                raw.get('rule_type', 'unknown'),
+                raw.get('pega_class', ''),
+                raw.get('ruleset', ''),
+                raw.get('rule_name') or rule_file.stem
+            )
             if self.skip_existing and self.store.get_by_id(rule_id):
                 skipped += 1
                 continue
@@ -207,10 +212,30 @@ Respond in JSON only:
 
     def _embed_and_store(self, rules: list[dict]):
         """Embed a batch of enriched rules and upsert into vector store."""
+        # Deduplicate within batch by ID
+        seen_ids = set()
+        deduped_rules = []
+        for rule in rules:
+            rid = "{}_{}_{}_{}".format(
+                rule.get('rule_type', 'unknown'),
+                rule.get('pega_class', ''),
+                rule.get('ruleset', ''),
+                rule.get('rule_name') or rule.get('id', 'unknown')
+            )[:200]
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                deduped_rules.append(rule)
+        rules = deduped_rules
         embeddings = self.embedder.embed_batch(rules)
         records = []
         for rule, embedding in zip(rules, embeddings):
-            rule_id = rule.get("rule_name") or rule.get("id", "unknown")
+            rule_id = "{}_{}_{}_{}".format(
+                rule.get('rule_type', 'unknown'),
+                rule.get('pega_class', ''),
+                rule.get('ruleset', ''),
+                rule.get('rule_name') or rule.get('id', 'unknown')
+            )
+            rule_id = rule_id[:200]
             rule_type = rule.get("rule_type", "unknown")
             ui = rule.get("ui_metadata", {})
 

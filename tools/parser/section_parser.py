@@ -100,43 +100,43 @@ class SectionParser:
 
     def enrich_ui_rules(self, rules: list[dict], raw_strings: list[str]) -> list[dict]:
         """
-        Enrich Section/Harness rules with UI metadata extracted from raw strings.
-
-        Args:
-            rules:       List of rule dicts from ContentsParser
-            raw_strings: Strings extracted from the .bin file (from BinParser)
-
-        Returns:
-            Updated rules list (Section/Harness rules now have ui_metadata)
+        Enrich Section/Harness rules with UI metadata.
+        Derives metadata from rule name (primary) + any raw strings (secondary).
         """
-        # Build a lookup of all strings for pattern matching
-        combined = " ".join(raw_strings).lower()
-
+        combined = " ".join(raw_strings).lower() if raw_strings else ""
         ui_rules = [r for r in rules if r.get("rule_type") in self.UI_RULE_TYPES]
         logger.info(f"Enriching {len(ui_rules)} UI rules (Section/Harness)")
 
         for rule in ui_rules:
             rule_name = rule.get("rule_name", "").lower()
+            pega_class = rule.get("pega_class", "").lower()
 
-            # Build a focused context: strings that mention this rule name
-            relevant = [s for s in raw_strings
-                        if rule_name in s.lower() or len(s) > 10]
-            context = " ".join(relevant[:500]).lower()  # cap at 500 strings
+            # Build context from rule name + class — these are very descriptive in PEGA
+            name_context = rule_name + " " + pega_class + " " + rule_name.replace("_", " ")
+
+            # Also use any available raw strings scoped to this rule
+            relevant_strings = [s for s in raw_strings
+                                 if rule_name in s.lower() and len(s) > 5]
+            string_context = " ".join(relevant_strings[:200]).lower()
+
+            context = name_context + " " + string_context
 
             rule["ui_metadata"] = {
-                "layout_types":    self._detect(context, LAYOUT_SIGNALS),
-                "template_type":   self._top_match(rule_name + " " + context,
-                                                    TEMPLATE_SIGNALS),
-                "controls_used":   self._detect(context, CONTROL_SIGNALS),
-                "data_sources":    self._extract_data_sources(context),
-                "visible_when":    self._extract_visible_when(context),
-                "referenced_classes": self._extract_classes(context),
-                "has_repeating":   any(kw in context for kw in
-                                       ["repeating", "pagelist", "pagegroup", "foreach"]),
-                "has_actions":     any(kw in context for kw in
-                                       ["button", "submit", "action", "flow"]),
-                "is_modal":        any(kw in context for kw in
-                                       ["modal", "dialog", "overlay", "popup"]),
+                "layout_types":       self._detect(context, LAYOUT_SIGNALS),
+                "template_type":      self._top_match(context, TEMPLATE_SIGNALS),
+                "controls_used":      self._detect(context, CONTROL_SIGNALS),
+                "data_sources":       self._extract_data_sources(context),
+                "visible_when":       self._extract_visible_when(context),
+                "referenced_classes": self._extract_classes(pega_class.upper()),
+                "has_repeating":      any(kw in context for kw in
+                                          ["list", "worklist", "table", "grid",
+                                           "repeating", "pagelist", "results"]),
+                "has_actions":        any(kw in context for kw in
+                                          ["action", "button", "submit", "create",
+                                           "perform", "save", "confirm"]),
+                "is_modal":           any(kw in context for kw in
+                                          ["modal", "dialog", "overlay", "popup",
+                                           "confirm", "prompt"]),
             }
 
         return rules

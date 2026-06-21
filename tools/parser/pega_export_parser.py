@@ -136,9 +136,16 @@ class PegaExportParser:
 
     def _rule_json_path(self, rule: dict) -> Path:
         """Generate a safe output filename for a rule JSON."""
-        rule_type = rule.get("rule_type", "unknown").replace(" ", "_")
-        pega_class = rule.get("pega_class", "").replace(" ", "_").replace("-", "_")
-        rule_name = rule.get("rule_name", "unknown").replace(" ", "_").replace("-", "_")
+        import re as _re
+        def safe(s):
+            # Remove characters that are illegal in Windows filenames
+            s = s.replace(" ", "_").replace("-", "_")
+            s = _re.sub(r'[\\/:*?"<>|!@#$%^&()+=\[\]{};,\'`~]', '', s)
+            return s[:60]  # cap length to avoid path limit issues
+
+        rule_type = safe(rule.get("rule_type", "unknown"))
+        pega_class = safe(rule.get("pega_class", ""))
+        rule_name = safe(rule.get("rule_name", "unknown"))
         filename = f"{rule_type}__{pega_class}__{rule_name}.json".lower()
         return self.output_dir / filename
 
