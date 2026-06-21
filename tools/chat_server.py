@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import anthropic
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -142,14 +142,12 @@ Current context: {context}""",
 Current context: {context}""",
 }
 
-# ── Chat endpoint (streaming) ─────────────────────────────────────────────────
+# ── Chat endpoint (plain JSON – works in all browsers) ────────────────────────
 @app.post("/chat")
-async def chat(req: ChatRequest):
+def chat(req: ChatRequest):
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
-        async def err():
-            yield "data: " + json.dumps({"text": "❌ ANTHROPIC_API_KEY not set in .env file."}) + "\n\n"
-        return StreamingResponse(err(), media_type="text/event-stream")
+        return {"intent": "Error", "text": "ANTHROPIC_API_KEY not set in .env file."}
 
     intent = detect_intent(req.message)
 
@@ -168,7 +166,6 @@ async def chat(req: ChatRequest):
 
     system = SYSTEM_PROMPTS[intent].format(context=context_str)
 
-    # Build messages (keep last 6 turns for history)
     messages = []
     for turn in req.history[-6:]:
         messages.append({"role": turn["role"], "content": turn["content"]})
@@ -176,31 +173,21 @@ async def chat(req: ChatRequest):
     user_content = req.message
     if rag_context:
         user_content += "\n" + rag_context
-
     messages.append({"role": "user", "content": user_content})
 
-    async def stream_response():
-        # Send intent badge first
-        yield "data: " + json.dumps({"intent": intent}) + "\n\n"
-
+    try:
         client = anthropic.Anthropic(api_key=api_key)
-        full_text = ""
-        try:
-            with client.messages.stream(
-                model="claude-haiku-4-5",
-                max_tokens=2048,
-                system=system,
-                messages=messages,
-            ) as stream:
-                for text in stream.text_stream:
-                    full_text += text
-                    yield "data: " + json.dumps({"text": text}) + "\n\n"
-        except Exception as e:
-            yield "data: " + json.dumps({"text": f"\n\n❌ Error: {e}"}) + "\n\n"
+        response = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=2048,
+            system=system,
+            messages=messages,
+        )
+        text = response.content[0].text
+    except Exception as e:
+        text = f"Error calling Claude: {e}"
 
-        yield "data: " + json.dumps({"done": True}) + "\n\n"
-
-    return StreamingResponse(stream_response(), media_type="text/event-stream")
+    return {"intent": intent, "text": text}
 
 # ── KB status endpoint ────────────────────────────────────────────────────────
 @app.get("/kb-status")
@@ -431,31 +418,16 @@ _Set the rule context fields above if you're working on a specific rule._`);
       body: JSON.stringify({ message: msg, rule_name: ruleName, rule_class: ruleClass, rule_set: ruleSet, history: history })
     }).then(function(response) {
       if (!response.ok) throw new Error('HTTP ' + response.status);
-      return response.text();
-    }).then(function(body) {
+      return response.json();
+    }).then(function(data) {
       var log = document.getElementById('log');
-      // Parse all SSE lines from the complete response body
-      var lines = body.split('\\n');
-      lines.forEach(function(line) {
-        line = line.trim();
-        if (!line.startsWith('data: ')) return;
-        try {
-          var data = JSON.parse(line.slice(6));
-          if (data.intent) {
-            intentBadge = '<span class="badge badge-' + data.intent + '">' + data.intent.toUpperCase() + '</span><br>';
-          }
-          if (data.text) {
-            accumulated += data.text;
-          }
-        } catch(e) { /* skip malformed lines */ }
-      });
-
-      if (!accumulated) accumulated = '_(no response — check server logs)_';
-      botBubble.innerHTML = intentBadge + renderMarkdown(accumulated);
+      var badge = data.intent ? '<span class="badge badge-' + data.intent + '">' + data.intent.toUpperCase() + '</span><br>' : '';
+      var text = data.text || '_(empty response)_';
+      botBubble.innerHTML = badge + renderMarkdown(text);
       log.scrollTop = log.scrollHeight;
 
       history.push({ role: 'user', content: msg });
-      history.push({ role: 'assistant', content: accumulated });
+      history.push({ role: 'assistant', content: text });
       if (history.length > 12) history = history.slice(-12);
 
       busy = false;
@@ -463,7 +435,7 @@ _Set the rule context fields above if you're working on a specific rule._`);
       document.getElementById('send').disabled = false;
       input.focus();
     }).catch(function(err) {
-      botBubble.innerHTML = '&#x274C; Error: ' + err.message + '<br><small style="color:#8b949e">Check that the server is running and ANTHROPIC_API_KEY is set.</small>';
+      botBubble.innerHTML = '&#x274C; Error: ' + err.message;
       busy = false;
       input.disabled = false;
       document.getElementById('send').disabled = false;
