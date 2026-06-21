@@ -119,14 +119,17 @@ class KnowledgeBuilder:
     def _enrich_rule(self, raw: dict) -> dict:
         """
         Use Claude Haiku to add a plain-English description and business context
-        to a raw PEGA rule dict. This makes the embeddings semantically rich.
+        to a raw PEGA rule dict. UI rules (Section/Harness) get a richer prompt.
         """
         rule_name = raw.get("rule_name", "Unknown")
         rule_type = raw.get("rule_type", "Unknown")
         pega_class = raw.get("pega_class", "")
-        xml_snippet = raw.get("xml", "")[:1500]  # cap XML to keep tokens low
+        xml_snippet = raw.get("xml", "")[:1500]
 
-        prompt = f"""You are a PEGA expert. Given this PEGA rule, write:
+        if rule_type in ("Section", "Harness"):
+            prompt = self._ui_enrichment_prompt(raw)
+        else:
+            prompt = f"""You are a PEGA expert. Given this PEGA rule, write:
 1. A 1-sentence plain-English description of what this rule does
 2. A 1-sentence business context (why it exists / what business process it supports)
 
@@ -157,29 +160,99 @@ Respond in JSON only:
 
         return {**raw, **enrichment}
 
+    def _ui_enrichment_prompt(self, raw: dict) -> str:
+        """Richer enrichment prompt for Section/Harness rules."""
+        rule_name = raw.get("rule_name", "Unknown")
+        rule_type = raw.get("rule_type", "Section")
+        pega_class = raw.get("pega_class", "")
+        ui = raw.get("ui_metadata", {})
+
+        ui_summary = []
+        if ui.get("template_type"):
+            ui_summary.append(f"Template type: {ui['template_type']}")
+        if ui.get("layout_types"):
+            ui_summary.append(f"Layouts: {', '.join(ui['layout_types'])}")
+        if ui.get("controls_used"):
+            ui_summary.append(f"Controls: {', '.join(ui['controls_used'])}")
+        if ui.get("data_sources"):
+            ui_summary.append(f"Data sources: {', '.join(ui['data_sources'][:5])}")
+        if ui.get("has_repeating"):
+            ui_summary.append("Has repeating/list layout")
+        if ui.get("has_actions"):
+            ui_summary.append("Has action buttons")
+        if ui.get("is_modal"):
+            ui_summary.append("Rendered as modal/dialog")
+
+        ui_text = "\n".join(ui_summary) if ui_summary else "(no UI metadata available)"
+
+        return f"""You are a PEGA UI expert. Given this PEGA {rule_type} rule metadata, write:
+1. A description (2-3 sentences) of what this UI rule displays and when a developer would use it
+2. A business context sentence (what user role / process step uses this screen)
+3. A "use_when" sentence — what requirement should trigger a developer to reuse or copy this pattern
+4. A "layout_summary" — 1 sentence describing the visual layout pattern
+
+Rule name: {rule_name}
+Rule type: {rule_type}
+PEGA class: {pega_class}
+UI analysis:
+{ui_text}
+
+Respond in JSON only:
+{{
+  "description": "...",
+  "business_context": "...",
+  "use_when": "...",
+  "layout_summary": "..."
+}}"""
+
     def _embed_and_store(self, rules: list[dict]):
         """Embed a batch of enriched rules and upsert into vector store."""
         embeddings = self.embedder.embed_batch(rules)
         records = []
         for rule, embedding in zip(rules, embeddings):
             rule_id = rule.get("rule_name") or rule.get("id", "unknown")
+            rule_type = rule.get("rule_type", "unknown")
+            ui = rule.get("ui_metadata", {})
+
             metadata = {
-                "rule_type": rule.get("rule_type", "unknown"),
-                "pega_class": rule.get("pega_class", ""),
-                "app": rule.get("app", ""),
-                "dependencies": json.dumps(rule.get("dependencies", [])),
-                "properties": json.dumps(rule.get("properties", [])[:20]),
+                "rule_type":      rule_type,
+                "pega_class":     rule.get("pega_class", ""),
+                "app":            rule.get("app", ""),
+                "dependencies":   json.dumps(rule.get("dependencies", [])),
+                "properties":     json.dumps(rule.get("properties", [])[:20]),
             }
-            document = (
-                f"{rule.get('description', '')} | {rule.get('business_context', '')}"
-            )
-            records.append(
-                {
-                    "rule_id": rule_id,
-                    "embedding": embedding,
-                    "metadata": metadata,
-                    "document": document,
-                }
-            )
+
+            # UI-specific metadata (searchable fields)
+            if rule_type in ("Section", "Harness"):
+                metadata["template_type"]  = ui.get("template_type", "")
+                metadata["layout_types"]   = json.dumps(ui.get("layout_types", []))
+                metadata["controls_used"]  = json.dumps(ui.get("controls_used", []))
+                metadata["has_repeating"]  = str(ui.get("has_repeating", False))
+                metadata["has_actions"]    = str(ui.get("has_actions", False))
+                metadata["is_modal"]       = str(ui.get("is_modal", False))
+                metadata["use_when"]       = rule.get("use_when", "")
+                metadata["layout_summary"] = rule.get("layout_summary", "")
+
+            # Document = the searchable text for semantic similarity
+            doc_parts = [
+                rule.get("description", ""),
+                rule.get("business_context", ""),
+            ]
+            if rule_type in ("Section", "Harness"):
+                doc_parts += [
+                    rule.get("use_when", ""),
+                    rule.get("layout_summary", ""),
+                    f"layout: {' '.join(ui.get('layout_types', []))}",
+                    f"controls: {' '.join(ui.get('controls_used', []))}",
+                    f"template: {ui.get('template_type', '')}",
+                ]
+            document = " | ".join(p for p in doc_parts if p)
+
+            records.append({
+                "rule_id":   rule_id,
+                "embedding": embedding,
+                "metadata":  metadata,
+                "document":  document,
+            })
         self.store.upsert_batch(records)
         logger.info(f"Stored {len(records)} rules in knowledge base")

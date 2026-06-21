@@ -42,6 +42,7 @@ logger = logging.getLogger("pega-ai-companion")
 def cmd_parse(args):
     """Parse a PEGA JAR export into JSON rule files (Step 0 — before learn)."""
     from parser import PegaExportParser
+    from parser.section_parser import SectionParser
 
     export_dir = Path(args.export_dir)
     if not export_dir.exists():
@@ -59,6 +60,31 @@ def cmd_parse(args):
         skip_existing=not args.force,
         force_extract=args.force,
     )
+
+    # Enrich Section/Harness rules with UI metadata
+    ui_rules = [r for r in rules if r.get("rule_type") in ("Section", "Harness")]
+    if ui_rules:
+        logger.info(f"Enriching {len(ui_rules)} Section/Harness rules with UI metadata...")
+        section_parser = SectionParser()
+        # Collect all string snippets from bin_data fields for context
+        all_strings = []
+        for r in rules:
+            bin_data = r.get("bin_data_strings", [])
+            all_strings.extend(bin_data if isinstance(bin_data, list) else [str(bin_data)])
+        rules = section_parser.enrich_ui_rules(rules, all_strings)
+        # Re-write enriched UI rules to JSON
+        import json as _json
+        from pathlib import Path as _Path
+        out = _Path(args.output_dir)
+        for rule in ui_rules:
+            rt = rule.get("rule_type", "unknown").replace(" ", "_")
+            pc = rule.get("pega_class", "").replace(" ", "_").replace("-", "_")
+            rn = rule.get("rule_name", "unknown").replace(" ", "_").replace("-", "_")
+            fpath = out / f"{rt}__{pc}__{rn}.json".lower()
+            with open(fpath, "w", encoding="utf-8") as f:
+                _json.dump(rule, f, indent=2, default=str)
+        logger.info(f"UI metadata written for {len(ui_rules)} Section/Harness rules")
+
     parser_obj.print_summary(rules)
     logger.info(f"Done! {len(rules)} rules written to {args.output_dir}")
     logger.info(f"Next step: python tools/run_extended.py learn --analysis-dir {args.output_dir}")
@@ -182,6 +208,95 @@ def cmd_kb_status(args):
     logger.info(f"Rule types : {', '.join(rule_types) if rule_types else 'none'}")
 
 
+def cmd_recommend(args):
+    """Recommend a Section/Harness pattern from the knowledge base."""
+    import os
+    from knowledge import VectorStore, EmbeddingEngine
+
+    requirement = args.requirement
+    rule_type_filter = None if args.rule_type == "any" else args.rule_type
+    top_n = args.top
+
+    logger.info(f"Searching knowledge base for: {requirement}")
+
+    store = VectorStore(persist_dir=args.kb_dir)
+    embedder = EmbeddingEngine(cache_dir=args.kb_dir)
+
+    # Embed the requirement query
+    query_vec = list(embedder.embed_batch([{"description": requirement,
+                                            "rule_name": "query",
+                                            "rule_type": rule_type_filter or "Section"}]))[0]
+
+    # Search with optional type filter
+    where = {"rule_type": rule_type_filter} if rule_type_filter else None
+    results = store.search(query_vec, n_results=top_n * 3, where=where)
+
+    # Filter to UI types only if no specific type given
+    if not rule_type_filter:
+        results = [r for r in results if r.get("metadata", {}).get("rule_type") in ("Section", "Harness")]
+
+    results = results[:top_n]
+
+    if not results:
+        logger.info("No matching sections found. Run 'learn' with your sections export first.")
+        return
+
+    # Build recommendation prompt for Claude
+    context_blocks = []
+    for i, r in enumerate(results, 1):
+        meta = r.get("metadata", {})
+        context_blocks.append(
+            f"Match {i}: {r.get('id', 'unknown')}\n"
+            f"  Type: {meta.get('rule_type')} | Class: {meta.get('pega_class')}\n"
+            f"  Template: {meta.get('template_type', 'unknown')} | "
+            f"Layouts: {meta.get('layout_types', '[]')} | "
+            f"Controls: {meta.get('controls_used', '[]')}\n"
+            f"  Description: {r.get('document', '')[:200]}\n"
+            f"  Use when: {meta.get('use_when', '')}"
+        )
+
+    context_text = "\n\n".join(context_blocks)
+
+    client = __import__("anthropic").Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    prompt = f"""You are a PEGA UI architect. A developer has this requirement:
+
+"{requirement}"
+
+Based on these matching sections from their existing codebase:
+
+{context_text}
+
+Provide:
+1. Which existing section best matches their requirement (and why)
+2. What configuration/layout pattern to use (table/repeating/flow/modal etc.)
+3. What controls they will need
+4. Whether to reuse an existing section or create a new one based on a pattern
+5. Key things to configure (data source, visible-when, repeating group etc.)
+
+Be specific and practical. Reference the actual rule names from their codebase."""
+
+    response = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    recommendation = response.content[0].text
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"SECTION RECOMMENDATION")
+    logger.info(f"{'='*60}")
+    logger.info(f"Requirement: {requirement}")
+    logger.info(f"\nTop {len(results)} matches from your codebase:")
+    for r in results:
+        meta = r.get("metadata", {})
+        logger.info(f"  - {r.get('id')} ({meta.get('rule_type')} | "
+                    f"template: {meta.get('template_type', '?')} | "
+                    f"class: {meta.get('pega_class', '?')})")
+    logger.info(f"\nRecommendation:\n{recommendation}")
+    logger.info(f"{'='*60}")
+
+
 # ──────────────────────────────────────────────
 # Argument parser
 # ──────────────────────────────────────────────
@@ -296,6 +411,30 @@ def build_parser() -> argparse.ArgumentParser:
     # ── kb-status ──
     kb_p = subparsers.add_parser("kb-status", help="Show knowledge base statistics")
     kb_p.set_defaults(func=cmd_kb_status)
+
+    # ── recommend ──
+    rec_p = subparsers.add_parser(
+        "recommend",
+        help="Recommend a Section/Harness pattern from your knowledge base for a given requirement",
+    )
+    rec_p.add_argument(
+        "--requirement", "-r", required=True,
+        help='Natural language requirement, e.g. "display a list of work items with filters and pagination"',
+    )
+    rec_p.add_argument(
+        "--rule-type", default="Section",
+        choices=["Section", "Harness", "any"],
+        help="Rule type to search (default: Section)",
+    )
+    rec_p.add_argument(
+        "--top", type=int, default=3,
+        help="Number of top matches to show (default: 3)",
+    )
+    rec_p.add_argument(
+        "--kb-dir", default="./knowledge_base",
+        help="Knowledge base directory (default: ./knowledge_base)",
+    )
+    rec_p.set_defaults(func=cmd_recommend)
 
     return parser
 
